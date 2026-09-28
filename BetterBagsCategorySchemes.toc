@@ -1,0 +1,11 @@
+## Interface: 16001
+## Title: BetterBags |cff0CD29DCategory Schemes|r
+## Notes: Opt-in Armor/Weapon category schemes for BetterBags + per-bag removal of default sections (with fall-through).
+## Author: jt
+## Version: 1.0.0
+## Dependencies: BetterBags
+## SavedVariables: BetterBagsCategorySchemesDB, EllesmereBetterBagsCategoriesDB
+## X-Category: Inventory
+
+Core.lua
+Config.lua
