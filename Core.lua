@@ -154,6 +154,11 @@ local function InitDB()
 	db.suppressed[BACKPACK] = db.suppressed[BACKPACK] or {}
 	db.suppressed[BANK]     = db.suppressed[BANK] or {}
 
+	-- Sync Backpack & Bank: when true, config changes mirror to both bags. Default on
+	-- (most people want their two bags organized the same way; power users turn it off
+	-- for independent per-bag setups).
+	if db.syncBags == nil then db.syncBags = true end
+
 	_G.BetterBagsCategorySchemesDB = db
 	EBBC.db = db
 	return db
@@ -163,6 +168,31 @@ end
 ---@param kind BagKind
 function EBBC:Bag(kind)
 	return self.db and self.db.bags and self.db.bags[kind]
+end
+
+-- Deep-copy one bag's weapon+armor config (for the Sync convergence copy).
+local function copyBagConfig(src)
+	local w, a = src.weapon, src.armor
+	local subs, types, slots = {}, {}, {}
+	for id in pairs(w.subclasses) do subs[id] = true end
+	for k in pairs(a.types) do types[k] = true end
+	for k in pairs(a.slots) do slots[k] = true end
+	return {
+		weapon = { mode = w.mode, priority = w.priority, subclasses = subs,
+			all1h = w.all1h, all2h = w.all2h, allRanged = w.allRanged },
+		armor = { mode = a.mode, priority = a.priority, types = types, slots = slots },
+	}
+end
+
+-- Copy the given bag's full state (schemes + removed-defaults) onto the other bag.
+-- Used when Sync is on so both bags stay identical.
+---@param fromKind BagKind
+function EBBC:SyncFrom(fromKind)
+	local other = (fromKind == BACKPACK) and BANK or BACKPACK
+	self.db.bags[other] = copyBagConfig(self.db.bags[fromKind])
+	local sup = {}
+	for name in pairs(self.db.suppressed[fromKind]) do sup[name] = true end
+	self.db.suppressed[other] = sup
 end
 
 -- Enum shorthands, guarded (all present on this client, but degrade safely).
@@ -666,7 +696,7 @@ local function HandleSlash(msg)
 			EBBC.db.bags[BANK].weapon.mode = m
 			EBBC:ApplyConfig(); Print("weapon grouping = " .. m .. " (both bags)")
 		else
-			Print("weapon grouping (backpack) is '" .. EBBC.db.bags[BACKPACK].weapon.mode .. "'. Use: /bbcs weapon off|on (then tick All 1H / All 2H / subtypes in /bb)")
+			Print("weapon grouping (backpack) is '" .. EBBC.db.bags[BACKPACK].weapon.mode .. "'. Use: /bbcs weapon off / on (then tick All 1H / All 2H / subtypes in /bb)")
 		end
 	elseif cmd == "armor" then
 		local m = rest:lower()
@@ -675,7 +705,37 @@ local function HandleSlash(msg)
 			EBBC.db.bags[BANK].armor.mode = m
 			EBBC:ApplyConfig(); Print("armor grouping = " .. m .. " (both bags)")
 		else
-			Print("armor mode (backpack) is '" .. EBBC.db.bags[BACKPACK].armor.mode .. "'. Use: /bbcs armor off|type|slot")
+			Print("armor mode (backpack) is '" .. EBBC.db.bags[BACKPACK].armor.mode .. "'. Use: /bbcs armor off / type / slot")
+		end
+	elseif cmd == "lump" then
+		-- /bbcs lump 1h / 2h / ranged on / off  → set a weapon lump bucket on BOTH bags.
+		local which, onoff = rest:lower():match("^(%S+)%s+(%S+)$")
+		local field = ({ ["1h"] = "all1h", ["2h"] = "all2h", ["ranged"] = "allRanged" })[which or ""]
+		if field and (onoff == "on" or onoff == "off") then
+			local v = onoff == "on" or nil
+			for _, k in ipairs({ BACKPACK, BANK }) do
+				EBBC.db.bags[k].weapon.mode = "on"
+				EBBC.db.bags[k].weapon[field] = v
+			end
+			EBBC:ApplyConfig(); Print(("weapon %s = %s (both bags, weapon grouping on)"):format(which, onoff))
+		else
+			Print("usage: /bbcs lump 1h / 2h / ranged on / off")
+		end
+	elseif cmd == "sub" then
+		-- /bbcs sub <id> on / off  → set a specific weapon subtype on BOTH bags.
+		local id, onoff = rest:lower():match("^(%d+)%s+(%S+)$")
+		id = tonumber(id)
+		if id and (onoff == "on" or onoff == "off") then
+			local v = onoff == "on" or nil
+			for _, k in ipairs({ BACKPACK, BANK }) do
+				EBBC.db.bags[k].weapon.mode = "on"
+				EBBC.db.bags[k].weapon.subclasses[id] = v
+			end
+			EBBC:ApplyConfig()
+			local nm = (C_Item.GetItemSubClassInfo and C_Item.GetItemSubClassInfo(CLASS_WEAPON, id)) or ("subclass " .. id)
+			Print(("weapon subtype %s (%s) = %s (both bags)"):format(id, nm, onoff))
+		else
+			Print("usage: /bbcs sub <id> on / off  (see /bbcs weapons for ids)")
 		end
 	elseif cmd == "remove" and rest ~= "" then
 		SetSuppressedBoth(rest, true)
@@ -686,6 +746,34 @@ local function HandleSlash(msg)
 		SetSuppressedBoth(rest, false); Print(("recovered default '%s'."):format(rest))
 	elseif cmd == "apply" then
 		EBBC:ApplyConfig(); Print("re-applied.")
+	elseif cmd == "sync" then
+		local r = rest:lower()
+		if r == "off" then
+			EBBC.db.syncBags = false; Print("sync OFF (Backpack and Bank are independent).")
+		elseif r == "backpack" or r == "bank" then
+			EBBC.db.syncBags = true
+			EBBC:SyncFrom(r == "backpack" and BACKPACK or BANK)
+			EBBC:ApplyConfig()
+			Print(("sync ON — copied %s config to the other bag."):format(r))
+		elseif r == "on" then
+			EBBC.db.syncBags = true; EBBC:ApplyConfig()
+			Print("sync ON. (Use '/bbcs sync backpack' or '/bbcs sync bank' to copy one bag onto the other.)")
+		else
+			Print(("sync is %s. Use: /bbcs sync on / off / backpack / bank"):format(EBBC.db.syncBags and "ON" or "OFF"))
+		end
+	elseif cmd == "status" then
+		-- Diagnostic: dump both bags' weapon/armor config so we can see what's set where.
+		Print("sync = " .. (EBBC.db.syncBags and "ON" or "OFF"))
+		for _, k in ipairs({ BACKPACK, BANK }) do
+			local bc = EBBC.db.bags[k]
+			local w, a = bc.weapon, bc.armor
+			local subs = {}
+			for id in pairs(w.subclasses) do subs[#subs + 1] = tostring(id) end
+			Print(("%s weapon: mode=%s all1h=%s all2h=%s allRanged=%s subclasses={%s} | armor: mode=%s"):format(
+				(k == BACKPACK) and "BACKPACK" or "BANK", tostring(w.mode),
+				tostring(w.all1h), tostring(w.all2h), tostring(w.allRanged),
+				table.concat(subs, ","), tostring(a.mode)))
+		end
 	elseif cmd == "weapons" then
 		-- Diagnostic: dump the enumerated weapon subclasses (id → client name) and
 		-- which are enabled for the Backpack, so the real IDs can be verified.
@@ -722,7 +810,7 @@ local function HandleSlash(msg)
 			end
 		end)
 	else
-		Print("commands: weapon off|on · armor off|type|slot · remove <Name> · restore <Name> · restore all · apply · open · weapons (list) · probe (item on cursor)")
+		Print("commands: weapon off / on · armor off / type / slot · remove <Name> · restore <Name> · restore all · apply · sync on/off/backpack/bank · status · lump 1h / 2h / ranged on / off · sub <id> on / off · open · weapons (list) · probe (item on cursor)")
 	end
 end
 

@@ -166,37 +166,56 @@ local function PopulateBagPane(content, kind)
 	local b = NewBuilder(content)
 	local cfg = EBBC.db.bags[kind]
 
+	-- After any edit: when Sync is on, mirror this bag's whole config to the other
+	-- bag so the two stay identical; then re-categorize.
+	local function afterWrite()
+		if EBBC.db.syncBags then EBBC:SyncFrom(kind) end
+		EBBC:ApplyConfig()
+	end
+
+	-- SYNC --------------------------------------------------------------------
+	local syncCb = MakeCheck(content, "Sync Backpack & Bank",
+		"When on, edits in either bag apply to both. Turning it on copies THIS bag's settings to the other.",
+		function() return EBBC.db.syncBags == true end,
+		function(v)
+			EBBC.db.syncBags = v or nil
+			if v then EBBC:SyncFrom(kind) end
+			EBBC:ApplyConfig()
+		end)
+	syncCb:SetPoint("TOPLEFT", content, "TOPLEFT", 4, -b.y)
+	b.y = b.y + ROW_H + 4
+
 	-- WEAPONS ------------------------------------------------------------------
 	local wlbl = AddControlLine(b, "Weapons")
 	local wChecks
 	MakeSegmented(content, wlbl, {
 		{ text = "Off", value = "off" }, { text = "On", value = "on" },
 	}, function() return cfg.weapon.mode end,
-	function(v) cfg.weapon.mode = v; EBBC:ApplyConfig() end,
+	function(v) cfg.weapon.mode = v; afterWrite() end,
 	function() if wChecks then SetGroupEnabled(wChecks, cfg.weapon.mode == "on") end end)
 
 	AddPriorityLine(b, "Priority", function() return cfg.weapon.priority end,
-		function(n) cfg.weapon.priority = n; EBBC:ApplyConfig() end)
+		function(n) cfg.weapon.priority = n; afterWrite() end)
 
 	-- The lump buckets come FIRST (their whole point is to save you from ticking
 	-- every subtype); a specific subtype ticked below still wins over its bucket.
 	local wspecs = {
 		{ label = "All One-Handed", tip = "Lump every one-handed weapon into one 'One-Handed Weapons' section.",
 			get = function() return cfg.weapon.all1h == true end,
-			set = function(v) cfg.weapon.all1h = v or nil; EBBC:ApplyConfig() end },
+			set = function(v) cfg.weapon.all1h = v or nil; afterWrite() end },
 		{ label = "All Two-Handed", tip = "Lump every two-handed weapon into one 'Two-Handed Weapons' section.",
 			get = function() return cfg.weapon.all2h == true end,
-			set = function(v) cfg.weapon.all2h = v or nil; EBBC:ApplyConfig() end },
+			set = function(v) cfg.weapon.all2h = v or nil; afterWrite() end },
 		{ label = "All Ranged", tip = "Lump bows/guns/crossbows/wands/thrown into one 'Ranged Weapons' section.",
 			get = function() return cfg.weapon.allRanged == true end,
-			set = function(v) cfg.weapon.allRanged = v or nil; EBBC:ApplyConfig() end },
+			set = function(v) cfg.weapon.allRanged = v or nil; afterWrite() end },
 	}
 	for _, e in ipairs(EBBC:WeaponSubclasses()) do
 		local id = e.id
 		wspecs[#wspecs + 1] = {
 			label = e.name, tip = "Give '" .. e.name .. "' its own section (overrides the lump bucket).",
 			get = function() return cfg.weapon.subclasses[id] == true end,
-			set = function(v) cfg.weapon.subclasses[id] = v or nil; EBBC:ApplyConfig() end,
+			set = function(v) cfg.weapon.subclasses[id] = v or nil; afterWrite() end,
 		}
 	end
 	wChecks = AddCheckGrid(b, wspecs)
@@ -208,14 +227,14 @@ local function PopulateBagPane(content, kind)
 	MakeSegmented(content, albl, {
 		{ text = "Off", value = "off" }, { text = "Material", value = "type" }, { text = "Slot", value = "slot" },
 	}, function() return cfg.armor.mode end,
-	function(v) cfg.armor.mode = v; EBBC:ApplyConfig() end,
+	function(v) cfg.armor.mode = v; afterWrite() end,
 	function()
 		if typeChecks then SetGroupEnabled(typeChecks, cfg.armor.mode == "type") end
 		if slotChecks then SetGroupEnabled(slotChecks, cfg.armor.mode == "slot") end
 	end)
 
 	AddPriorityLine(b, "Priority", function() return cfg.armor.priority end,
-		function(n) cfg.armor.priority = n; EBBC:ApplyConfig() end)
+		function(n) cfg.armor.priority = n; afterWrite() end)
 
 	local tspecs = {}
 	for _, e in ipairs(EBBC:ArmorTypeKeys()) do
@@ -223,7 +242,7 @@ local function PopulateBagPane(content, kind)
 		tspecs[#tspecs + 1] = {
 			label = key .. " Armor", tip = "Group all " .. key .. " armor (in 'Material' mode).",
 			get = function() return cfg.armor.types[key] == true end,
-			set = function(v) cfg.armor.types[key] = v or nil; EBBC:ApplyConfig() end,
+			set = function(v) cfg.armor.types[key] = v or nil; afterWrite() end,
 		}
 	end
 	typeChecks = AddCheckGrid(b, tspecs)
@@ -235,7 +254,7 @@ local function PopulateBagPane(content, kind)
 		sspecs[#sspecs + 1] = {
 			label = slot, tip = "Give the '" .. slot .. "' slot its own section (in 'Slot' mode).",
 			get = function() return cfg.armor.slots[slot] == true end,
-			set = function(v) cfg.armor.slots[slot] = v or nil; EBBC:ApplyConfig() end,
+			set = function(v) cfg.armor.slots[slot] = v or nil; afterWrite() end,
 		}
 	end
 	slotChecks = AddCheckGrid(b, sspecs)
@@ -250,7 +269,7 @@ local function PopulateBagPane(content, kind)
 	local rfs = restore:GetFontString(); if rfs then rfs:SetFontObject("GameFontHighlightSmall") end
 	restore:SetPoint("LEFT", rlbl, "RIGHT", 8, 0)
 	restore:SetScript("OnClick", function()
-		EBBC:RestoreAllDefaults(kind)
+		if EBBC.db.syncBags then EBBC:RestoreAllDefaults() else EBBC:RestoreAllDefaults(kind) end
 		if defChecks then for _, cb in ipairs(defChecks) do cb:SetChecked(false) end end
 	end)
 	Tooltip(restore, "Recover every removed default in this bag.")
@@ -261,7 +280,7 @@ local function PopulateBagPane(content, kind)
 		dspecs[#dspecs + 1] = {
 			label = n, tip = "Remove '" .. n .. "' — its items fall through to the next category. Untick to recover.",
 			get = function() return EBBC:IsSuppressed(kind, n) end,
-			set = function(v) EBBC.db.suppressed[kind][n] = v or nil; EBBC:ApplyConfig() end,
+			set = function(v) EBBC.db.suppressed[kind][n] = v or nil; afterWrite() end,
 		}
 	end
 	defChecks = AddCheckGrid(b, dspecs)
